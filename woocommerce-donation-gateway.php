@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WooCommerce Donation Payment Gateway
  * Plugin URI: https://saadline.ir
- * Description: یک درگاه پرداخت سفارشی برای هدایت کاربران به صفحه پرداخت حمایتی با قابلیت‌های پیشرفته.
- * Version: 2.0
+ * Description: یک درگاه پرداخت سفارشی برای هدایت کاربران به صفحه پرداخت حمایتی با قابلیت AJAX.
+ * Version: 2.1
  * Author: Sedali
  * Author URI: https://saadline.ir
  * Text Domain: wc-donation-gateway
@@ -35,7 +35,7 @@ function init_custom_donation_gateway() {
             $this->id = 'custom_donation';
             $this->method_title = __('پرداخت حمایتی', 'wc-donation-gateway');
             $this->method_description = __('پس از تکمیل سفارش، به صفحه پرداخت حمایتی منتقل خواهید شد.', 'wc-donation-gateway');
-            $this->has_fields = true; // برای نمایش فرم انتخاب گزینه‌ها
+            $this->has_fields = true;
 
             $this->init_form_fields();
             $this->init_settings();
@@ -48,6 +48,9 @@ function init_custom_donation_gateway() {
             $this->icon = $this->get_option('logo');
 
             add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
+            add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
+            add_action('wp_ajax_check_donation_status', array($this, 'check_donation_status'));
+            add_action('wp_ajax_nopriv_check_donation_status', array($this, 'check_donation_status'));
         }
 
         // تنظیمات درگاه پرداخت در پنل ادمین
@@ -146,21 +149,95 @@ function init_custom_donation_gateway() {
             $order = wc_get_order($order_id);
             $redirect_url = !empty($_POST['donation_redirect_option']) ? esc_url($_POST['donation_redirect_option']) : $this->get_option('redirect_url');
 
-            // تغییر وضعیت سفارش به "در انتظار"
-            $order->update_status('pending', __('در انتظار تأیید پرداخت حمایتی', 'wc-donation-gateway'));
+            // تولید کد رهگیری
+            $tracking_code = wp_generate_uuid4(); // کد منحصربه‌فرد
+            $redirect_url = add_query_arg('tracking', $tracking_code, $redirect_url);
 
-            // ثبت یادداشت در سفارش
-            $order->add_order_note(sprintf(__('کاربر به صفحه پرداخت حمایتی هدایت شد: %s', 'wc-donation-gateway'), $redirect_url));
+            // ثبت کد رهگیری در سفارش
+            $order->update_meta_data('_donation_tracking_code', $tracking_code);
+            $order->update_status('pending', __('در انتظار تأیید پرداخت حمایتی', 'wc-donation-gateway'));
+            $order->add_order_note(sprintf(__('کاربر به صفحه پرداخت حمایتی هدایت شد: %s (کد رهگیری: %s)', 'wc-donation-gateway'), $redirect_url, $tracking_code));
+            $order->save();
 
             return array(
                 'result' => 'success',
                 'redirect' => $redirect_url
             );
         }
+
+        // بارگذاری اسکریپت‌های AJAX
+        public function enqueue_scripts() {
+            if (is_checkout() && $this->id === WC()->session->get('chosen_payment_method')) {
+                wp_enqueue_script('wc-donation-ajax', plugin_dir_url(__FILE__) . 'donation-ajax.js', array('jquery'), '1.0', true);
+                wp_localize_script('wc-donation-ajax', 'wc_donation_params', array(
+                    'ajax_url' => admin_url('admin-ajax.php'),
+                    'order_id' => WC()->checkout()->get_value('order_id'),
+                    'tracking_code' => WC()->session->get('donation_tracking_code'),
+                ));
+            }
+        }
+
+        // تابع AJAX برای بررسی وضعیت
+        public function check_donation_status() {
+            $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+            $tracking_code = isset($_POST['tracking_code']) ? sanitize_text_field($_POST['tracking_code']) : '';
+
+            if (!$order_id || !$tracking_code) {
+                wp_send_json_error(array('message' => __('اطلاعات نامعتبر است.', 'wc-donation-gateway')));
+            }
+
+            $order = wc_get_order($order_id);
+            if (!$order || $order->get_meta('_donation_tracking_code') !== $tracking_code) {
+                wp_send_json_error(array('message' => __('سفارش یافت نشد یا کد رهگیری اشتباه است.', 'wc-donation-gateway')));
+            }
+
+            $status = $order->get_status();
+            wp_send_json_success(array(
+                'status' => $status,
+                'message' => $status === 'completed' ? __('پرداخت با موفقیت انجام شد.', 'wc-donation-gateway') : __('در انتظار تأیید پرداخت.', 'wc-donation-gateway')
+            ));
+        }
     }
 }
 
-// اضافه کردن استایل ساده برای انتخاب‌گر (اختیاری)
+// REST API برای دریافت وضعیت از صفحه مقصد (اختیاری برای درگاه خارجی)
+add_action('rest_api_init', 'register_donation_status_endpoint');
+function register_donation_status_endpoint() {
+    register_rest_route('wc-donation/v1', '/status', array(
+        'methods' => 'POST',
+        'callback' => 'update_donation_status',
+        'permission_callback' => '__return_true', // در عمل باید کلید API چک بشه
+    ));
+}
+
+function update_donation_status($request) {
+    $tracking_code = sanitize_text_field($request->get_param('tracking_code'));
+    $status = sanitize_text_field($request->get_param('status')); // 'success' یا 'failed'
+
+    $orders = wc_get_orders(array(
+        'meta_key' => '_donation_tracking_code',
+        'meta_value' => $tracking_code,
+        'limit' => 1,
+    ));
+
+    if (empty($orders)) {
+        return new WP_Error('invalid_tracking', __('کد رهگیری نامعتبر است.', 'wc-donation-gateway'), array('status' => 404));
+    }
+
+    $order = $orders[0];
+    if ($status === 'success') {
+        $order->update_status('completed', __('پرداخت حمایتی تأیید شد.', 'wc-donation-gateway'));
+    } else {
+        $order->update_status('failed', __('پرداخت حمایتی ناموفق بود.', 'wc-donation-gateway'));
+    }
+
+    return rest_ensure_response(array(
+        'success' => true,
+        'message' => __('وضعیت سفارش به‌روزرسانی شد.', 'wc-donation-gateway'),
+    ));
+}
+
+// استایل ساده برای انتخاب‌گر
 add_action('wp_enqueue_scripts', 'wc_donation_gateway_styles');
 function wc_donation_gateway_styles() {
     if (is_checkout()) {
