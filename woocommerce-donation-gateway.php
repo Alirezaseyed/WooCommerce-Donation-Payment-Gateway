@@ -5,7 +5,7 @@
  * Description: یک درگاه پرداخت سفارشی برای هدایت کاربران به صفحه پرداخت حمایتی.
  * Version: 1.0
  * Author: Sedali
- * Author URI: https://example.com
+ * Author URI: https://saadline.ir
  */
 
 if (!defined('ABSPATH')) {
