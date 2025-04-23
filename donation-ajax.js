@@ -12,24 +12,40 @@ jQuery(document).ready(function($) {
             },
             success: function(response) {
                 if (response.success) {
-                    alert(response.data.message);
-                    if (response.data.status === 'completed') {
-                        window.location.reload(); // رفرش صفحه بعد از موفقیت
-                    }
+                    Swal.fire({
+                        icon: response.data.status === 'completed' ? 'success' : 'info',
+                        title: response.data.status === 'completed' ? 'پرداخت موفق' : 'وضعیت پرداخت',
+                        text: response.data.message,
+                        confirmButtonText: 'باشه'
+                    }).then((result) => {
+                        if (response.data.status === 'completed') {
+                            window.location.reload();
+                        }
+                    });
                 } else {
-                    alert(response.data.message);
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'خطا',
+                        text: response.data.message,
+                        confirmButtonText: 'باشه'
+                    });
                 }
             },
             error: function() {
-                alert('خطا در بررسی وضعیت پرداخت.');
+                Swal.fire({
+                    icon: 'error',
+                    title: 'خطا',
+                    text: 'خطا در بررسی وضعیت پرداخت.',
+                    confirmButtonText: 'باشه'
+                });
             }
         });
     };
 
-    // چک خودکار هر 10 ثانیه (اختیاری)
+    // چک خودکار هر 10 ثانیه
     setInterval(checkStatus, 10000);
 
-    // یا اضافه کردن دکمه دستی (اختیاری)
+    // دکمه دستی برای بررسی وضعیت
     $('form.checkout').append('<button type="button" id="check-donation-status">بررسی وضعیت پرداخت</button>');
     $('#check-donation-status').on('click', checkStatus);
 });
